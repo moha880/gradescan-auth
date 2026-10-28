@@ -13,6 +13,7 @@
   p{line-height:1.5;margin:8px 0}
   .btn{display:inline-block;background:#3d3128;color:#fff;padding:14px 26px;border-radius:8px;text-decoration:none;margin-top:12px;border:0;font:inherit;font-size:16px}
   .btn2{background:#fff;color:#3d3128;border:1px solid #3d3128;padding:10px 18px;border-radius:8px;font:inherit;font-size:14px;margin-top:6px}
+  .alt{display:inline-block;text-decoration:none}
   .small{font-size:13px;color:#6b5d50}
   [hidden]{display:none}
 </style>
@@ -22,6 +23,7 @@
   <h1 id="title">Returning to GradeScan…</h1>
   <p id="msg"></p>
   <p id="open" hidden><a class="btn" id="link" href="#">Open GradeScan</a></p>
+  <p id="altwrap" hidden><a class="btn2 alt" id="alt" href="#">Open in Expo Go</a></p>
   <p id="where" class="small" hidden></p>
   <p id="help" hidden class="small">
     <span id="helpText">Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.</span><br>
@@ -46,6 +48,8 @@
  *     application without a user gesture" as a blocked case). So: no setTimeout here.
  *   - the big button is a second try (a fresh tap always counts); on Android it uses an "intent:"
  *     link that names Expo Go's package;
+ *   - when the app names a second way back (Expo Go AND the installed app), a second button opens
+ *     that one, so it does not matter which of the two is actually running;
  *   - "Copy sign-in link" is the last resort: the app has a box where the link can be pasted.
  *
  * If you changed "scheme" in the app's app.json, add it here too (with a colon).
@@ -62,6 +66,8 @@
     cannot: 'لا يمكن تسجيل الدخول من هنا',
     cannotMsg: 'ابدأ تسجيل الدخول من تطبيق GradeScan (الإعدادات ← المتابعة باستخدام Google).',
     open: 'فتح GradeScan',
+    openExpo: 'الفتح في Expo Go',
+    openApp: 'فتح التطبيق المثبّت',
     help: 'لم يحدث شيء؟ انسخ رابط تسجيل الدخول، ثم ارجع إلى GradeScan والصقه عندما يُطلب منك.',
     copy: 'نسخ رابط تسجيل الدخول',
     copied: 'تم النسخ ✓'
@@ -72,6 +78,8 @@
     cannot: 'Cannot sign in from here',
     cannotMsg: 'Open the sign-in from the GradeScan app (Settings → Continue with Google).',
     open: 'Open GradeScan',
+    openExpo: 'Open in Expo Go',
+    openApp: 'Open the installed app',
     help: 'Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.',
     copy: 'Copy sign-in link',
     copied: 'Copied ✓'
@@ -89,16 +97,25 @@
     $('msg').textContent = message || '';
   }
 
-  // state = base64url(JSON {r: appLink, e: expiry, n: nonce}) + "." + signature
-  function returnUrlFromState(s) {
+  // state = base64url(JSON {r: appLink, a: optional second appLink, e: expiry, n: nonce}) + "." + signature
+  function appLink(r) {
     try {
-      var b64 = s.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
-      while (b64.length % 4) b64 += '=';
-      var json = decodeURIComponent(escape(atob(b64)));
-      var r = JSON.parse(json).r;
       if (typeof r !== 'string' || r.length === 0 || r.length > 600 || /[\s<>"'`;#\\]/.test(r)) return null;
       var scheme = new URL(r).protocol.toLowerCase();
       return APP_SCHEMES.indexOf(scheme) === -1 ? null : r;
+    } catch (e) {
+      return null;
+    }
+  }
+  function linksFromState(s) {
+    try {
+      var b64 = s.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var data = JSON.parse(decodeURIComponent(escape(atob(b64))));
+      var first = appLink(data.r);
+      if (!first) return null;
+      var second = appLink(data.a);
+      return { first: first, second: second && second !== first ? second : null };
     } catch (e) {
       return null;
     }
@@ -136,11 +153,12 @@
     }
   }
 
-  var back = returnUrlFromState(state);
-  if (!back) {
+  var links = linksFromState(state);
+  if (!links) {
     show(TX.cannot, TX.cannotMsg);
     return;
   }
+  var back = links.first;
 
   var query;
   if (error) {
@@ -150,14 +168,23 @@
   } else {
     query = 'error=' + encodeURIComponent('Google did not send a sign-in code');
   }
-  var target = back + (back.indexOf('?') === -1 ? '?' : '&') + query;
+  function withQuery(base) { return base + (base.indexOf('?') === -1 ? '?' : '&') + query; }
+  var target = withQuery(back);
   var isAndroid = /Android/i.test(navigator.userAgent || '');
-  var buttonHref = (isAndroid && androidIntent(target)) || target;
+  function forButton(u) { return (isAndroid && androidIntent(u)) || u; }
 
   show(error ? TX.cancelled : TX.almost, TX.returning);
   $('link').textContent = TX.open;
-  $('link').href = buttonHref;
+  $('link').href = forButton(target);
   $('open').hidden = false;
+  if (links.second) {
+    // The app knows two ways back (Expo Go and the installed app); this is the other one.
+    var altTarget = withQuery(links.second);
+    var altIsExpo = /^exps?:/i.test(links.second);
+    $('alt').textContent = altIsExpo ? TX.openExpo : TX.openApp;
+    $('alt').href = forButton(altTarget);
+    $('altwrap').hidden = false;
+  }
   $('helpText').textContent = TX.help;
   $('copy').textContent = TX.copy;
   $('help').hidden = !!error;   // nothing to paste after a cancel
@@ -165,7 +192,7 @@
     copyText(target, function () { $('copy').textContent = TX.copied; });
   });
   // Shows which app link is used (never the code), so a wrong address is easy to spot.
-  $('where').textContent = back;
+  $('where').textContent = links.second ? back + '  |  ' + links.second : back;
   $('where').hidden = false;
   // Immediately, not from a timer (see the note at the top). replace() keeps the used link out of history.
   window.location.replace(target);
