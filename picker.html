@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="robots" content="noindex">
+<title>GradeScan: choose a sheet</title>
+<style>
+  html,body{height:100%}
+  body{font-family:system-ui,-apple-system,Segoe UI,Tahoma,sans-serif;background:#f6f3ec;color:#2b2118;display:flex;align-items:center;justify-content:center;margin:0;padding:24px;box-sizing:border-box}
+  main{max-width:420px;text-align:center}
+  h1{font-size:20px;margin:0 0 10px}
+  p{line-height:1.5;margin:8px 0}
+  .small{font-size:13px;color:#6b5d50}
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Opening Google Drive…</h1>
+  <p id="msg" class="small"></p>
+</main>
+<script>
+/*
+ * GradeScan sheet picker (static page, hosted on GitHub Pages next to callback.html).
+ *
+ * GradeScan only gets access to the Google Sheets a teacher HANDS to it (Google's "drive.file"
+ * permission). Handing over an existing sheet, also one other people shared with them, is done with
+ * Google's own file picker, which is a web component. The GradeScan app opens this page inside a
+ * WebView and gives it, before the page loads, an object named window.GS_PICKER:
+ *
+ *   { accessToken, apiKey, appId, fileId? }
+ *
+ *   accessToken  short-lived Google token of the signed-in teacher (about an hour, drive.file only)
+ *   apiKey       browser API key (restricted to the picker and to this page's address in Google Cloud)
+ *   appId        the Google Cloud project number
+ *   fileId       optional: the teacher pasted a link, so this sheet is shown first
+ *
+ * The page sends one JSON message back to the app (window.ReactNativeWebView.postMessage):
+ *   { type: 'shown' }                                the picker is on screen
+ *   { type: 'picked', id, name, url }                a sheet was chosen: the app may use it from now on
+ *   { type: 'cancel' }                               closed without choosing
+ *   { type: 'error', code, message }                 Google's scripts did not load / the picker failed
+ * It never sends the token anywhere and talks only to Google. Opened in a normal browser (no
+ * window.GS_PICKER) it just says where to start.
+ */
+(function () {
+  var AR = /^ar\b/i.test(navigator.language || '');
+  var TX = AR ? {
+    opening: 'جارٍ فتح Google Drive…',
+    fromApp: 'ابدأ من تطبيق GradeScan (الاتصال ← اختيار من Google Drive).',
+    failed: 'تعذّر فتح Google Drive',
+    failedMsg: 'تحقق من الاتصال بالإنترنت ثم حاول مرة أخرى.',
+    title: 'اختر جدول بيانات لـ GradeScan'
+  } : {
+    opening: 'Opening Google Drive…',
+    fromApp: 'Start from the GradeScan app (Connect → Choose from Google Drive).',
+    failed: 'Could not open Google Drive',
+    failedMsg: 'Check your internet connection and try again.',
+    title: 'Choose a sheet for GradeScan'
+  };
+  if (AR) { document.documentElement.lang = 'ar'; document.documentElement.dir = 'rtl'; }
+
+  function $(id) { return document.getElementById(id); }
+  function show(title, message) {
+    $('title').textContent = title;
+    $('msg').textContent = message || '';
+  }
+  function post(message) {
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(message));
+      }
+    } catch (e) { /* the app is gone; nothing to tell */ }
+  }
+
+  var cfg = window.GS_PICKER;
+  var configured = cfg && typeof cfg === 'object' &&
+    typeof cfg.accessToken === 'string' && cfg.accessToken.length > 0 &&
+    typeof cfg.apiKey === 'string' && cfg.apiKey.length > 0 &&
+    (typeof cfg.appId === 'string' || typeof cfg.appId === 'number') && String(cfg.appId).length > 0;
+  if (!configured) {
+    show(TX.title, TX.fromApp);
+    return;
+  }
+  // The token now lives only in this page's memory.
+  var token = cfg.accessToken, apiKey = cfg.apiKey, appId = String(cfg.appId);
+  var fileId = typeof cfg.fileId === 'string' && /^[A-Za-z0-9_-]{10,200}$/.test(cfg.fileId) ? cfg.fileId : '';
+  try { delete window.GS_PICKER; } catch (e) { window.GS_PICKER = undefined; }
+
+  show(TX.opening, '');
+
+  var finished = false;
+  function fail(code, message) {
+    if (finished) return;
+    finished = true;
+    show(TX.failed, TX.failedMsg);
+    post({ type: 'error', code: code, message: String(message || code).slice(0, 200) });
+  }
+
+  function build() {
+    try {
+      var G = google.picker;
+      var SHEETS = 'application/vnd.google-apps.spreadsheet';
+      function view(owned) {
+        var v = new G.DocsView(G.ViewId.SPREADSHEETS).setMimeTypes(SHEETS).setIncludeFolders(false);
+        // LIST: with the per-file permission Google may not hand out thumbnails
+        if (G.DocsViewMode && G.DocsViewMode.LIST) v.setMode(G.DocsViewMode.LIST);
+        if (owned !== null) v.setOwnedByMe(owned);
+        return v;
+      }
+      var builder = new G.PickerBuilder()
+        .setAppId(appId)
+        .setDeveloperKey(apiKey)
+        .setOAuthToken(token)
+        .setOrigin(window.location.protocol + '//' + window.location.host)
+        .setLocale(AR ? 'ar' : 'en')
+        .setTitle(TX.title);
+      if (fileId) {
+        // the teacher pasted a link: show exactly that sheet first (the other tabs stay available)
+        builder.addView(view(null).setFileIds(fileId));
+      }
+      builder.addView(view(true)).addView(view(false)); // my sheets, shared with me
+      builder.setCallback(function (data) {
+        if (finished || !data) return;
+        var action = data[G.Response.ACTION];
+        if (action === G.Action.PICKED) {
+          var docs = data[G.Response.DOCUMENTS] || [];
+          var doc = docs[0];
+          if (!doc) { fail('empty', 'Nothing was chosen.'); return; }
+          finished = true;
+          post({
+            type: 'picked',
+            id: String(doc[G.Document.ID] || ''),
+            name: String(doc[G.Document.NAME] || '').slice(0, 200),
+            url: String(doc[G.Document.URL] || '')
+          });
+        } else if (action === G.Action.CANCEL) {
+          finished = true;
+          post({ type: 'cancel' });
+        } else if (action === 'loaded') {
+          post({ type: 'shown' });
+        }
+      });
+      builder.build().setVisible(true);
+      post({ type: 'shown' });
+    } catch (e) {
+      fail('build', e && e.message ? e.message : e);
+    }
+  }
+
+  var script = document.createElement('script');
+  script.src = 'https://apis.google.com/js/api.js';
+  script.async = true;
+  script.onload = function () {
+    try {
+      gapi.load('picker', {
+        callback: build,
+        onerror: function () { fail('load-picker', 'The picker did not load.'); },
+        timeout: 15000,
+        ontimeout: function () { fail('load-picker-timeout', 'The picker took too long to load.'); }
+      });
+    } catch (e) {
+      fail('load-gapi', e && e.message ? e.message : e);
+    }
+  };
+  script.onerror = function () { fail('load-script', 'Google scripts did not load.'); };
+  document.head.appendChild(script);
+})();
+</script>
+</body>
+</html>
