@@ -52,11 +52,18 @@
  *     that one, so it does not matter which of the two is actually running;
  *   - "Copy sign-in link" is the last resort: the app has a box where the link can be pasted.
  *
+ * Old pages must stay quiet:
+ *   - right after reading ?code=…&state=…, the page removes them from the address bar (history.replaceState),
+ *     so reloading or restoring this tab never forwards the same sign-in to the app a second time;
+ *   - a state that is older than its server-side lifetime (10 min, plus 5 min for clock differences)
+ *     is shown as "expired" and nothing is forwarded.
+ *
  * If you changed "scheme" in the app's app.json, add it here too (with a colon).
  */
 (function () {
   var APP_SCHEMES = ['exp:', 'exps:', 'gradescan:'];
   var EXPO_GO_PACKAGE = 'host.exp.exponent';
+  var STALE_GRACE_MS = 5 * 60 * 1000;   // the server's own limit is 10 minutes
 
   var AR = /^ar\b/i.test(navigator.language || '');
   var TX = AR ? {
@@ -65,6 +72,8 @@
     cancelled: 'تم إلغاء تسجيل الدخول',
     cannot: 'لا يمكن تسجيل الدخول من هنا',
     cannotMsg: 'ابدأ تسجيل الدخول من تطبيق GradeScan (الإعدادات ← المتابعة باستخدام Google).',
+    expired: 'انتهت صلاحية رابط تسجيل الدخول',
+    expiredMsg: 'هذه الصفحة قديمة. ارجع إلى تطبيق GradeScan واضغط «المتابعة باستخدام Google» من جديد، ثم أغلق هذه الصفحة.',
     open: 'فتح GradeScan',
     openExpo: 'الفتح في Expo Go',
     openApp: 'فتح التطبيق المثبّت',
@@ -77,6 +86,8 @@
     cancelled: 'Sign-in cancelled',
     cannot: 'Cannot sign in from here',
     cannotMsg: 'Open the sign-in from the GradeScan app (Settings → Continue with Google).',
+    expired: 'This sign-in link has expired',
+    expiredMsg: 'This page is old. Go back to the GradeScan app, tap Continue with Google again, and close this page.',
     open: 'Open GradeScan',
     openExpo: 'Open in Expo Go',
     openApp: 'Open the installed app',
@@ -90,6 +101,12 @@
   var state = params.get('state') || '';
   var code = params.get('code') || '';
   var error = params.get('error') || '';
+
+  // The values are now in memory. Take them out of the address bar and out of this tab's history
+  // entry: a browser that later reloads or re-opens this tab (a stale tab left behind by an earlier
+  // sign-in, "restore tabs", a Custom Tab being reused) then finds NO code and never forwards an
+  // old sign-in to the app again. The buttons and "Copy sign-in link" use the copies in memory.
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* nothing to strip */ }
 
   function $(id) { return document.getElementById(id); }
   function show(title, message) {
@@ -115,7 +132,11 @@
       var first = appLink(data.r);
       if (!first) return null;
       var second = appLink(data.a);
-      return { first: first, second: second && second !== first ? second : null };
+      return {
+        first: first,
+        second: second && second !== first ? second : null,
+        expires: typeof data.e === 'number' && isFinite(data.e) ? data.e : null
+      };
     } catch (e) {
       return null;
     }
@@ -156,6 +177,13 @@
   var links = linksFromState(state);
   if (!links) {
     show(TX.cannot, TX.cannotMsg);
+    return;
+  }
+  // The server refuses a state after 10 minutes anyway. A page whose state is clearly older than
+  // that is a leftover (an old tab coming back), so it must not push the app around: say so and stop.
+  // The extra 5 minutes keep a phone whose clock is a little off from being turned away.
+  if (links.expires !== null && Date.now() > links.expires + STALE_GRACE_MS) {
+    show(TX.expired, TX.expiredMsg);
     return;
   }
   var back = links.first;
