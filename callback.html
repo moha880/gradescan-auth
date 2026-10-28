@@ -7,11 +7,13 @@
 <meta name="robots" content="noindex">
 <title>GradeScan sign-in</title>
 <style>
-  body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f6f3ec;color:#2b2118;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:24px}
+  body{font-family:system-ui,-apple-system,Segoe UI,Tahoma,sans-serif;background:#f6f3ec;color:#2b2118;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:24px}
   main{max-width:420px;text-align:center}
   h1{font-size:22px;margin:0 0 12px}
   p{line-height:1.5;margin:8px 0}
-  .btn{display:inline-block;background:#3d3128;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;margin-top:12px}
+  .btn{display:inline-block;background:#3d3128;color:#fff;padding:14px 26px;border-radius:8px;text-decoration:none;margin-top:12px;border:0;font:inherit;font-size:16px}
+  .btn2{background:#fff;color:#3d3128;border:1px solid #3d3128;padding:10px 18px;border-radius:8px;font:inherit;font-size:14px;margin-top:6px}
+  .small{font-size:13px;color:#6b5d50}
   [hidden]{display:none}
 </style>
 </head>
@@ -20,6 +22,10 @@
   <h1 id="title">Returning to GradeScan…</h1>
   <p id="msg"></p>
   <p id="open" hidden><a class="btn" id="link" href="#">Open GradeScan</a></p>
+  <p id="help" hidden class="small">
+    <span id="helpText">Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.</span><br>
+    <button class="btn2" id="copy" type="button">Copy sign-in link</button>
+  </p>
 </main>
 <script>
 /*
@@ -31,19 +37,51 @@
  * `state` (it was put there by the server) and is accepted ONLY when it is an app link
  * (Expo Go or the installed app), never a website.
  *
+ * Getting back into the app:
+ *   - the page redirects to the app link by itself (works in most browsers);
+ *   - the big button is a second try; on Android it uses an "intent:" link, which Chrome opens
+ *     even when it ignores a plain custom-scheme link;
+ *   - "Copy sign-in link" is the last resort: the app has a box where the link can be pasted.
+ *
  * If you changed "scheme" in the app's app.json, add it here too (with a colon).
  */
 (function () {
   var APP_SCHEMES = ['exp:', 'exps:', 'gradescan:'];
+  var EXPO_GO_PACKAGE = 'host.exp.exponent';
+
+  var AR = /^ar\b/i.test(navigator.language || '');
+  var TX = AR ? {
+    returning: 'جارٍ العودة إلى GradeScan…',
+    almost: 'اكتمل تقريباً',
+    cancelled: 'تم إلغاء تسجيل الدخول',
+    cannot: 'لا يمكن تسجيل الدخول من هنا',
+    cannotMsg: 'ابدأ تسجيل الدخول من تطبيق GradeScan (الإعدادات ← المتابعة باستخدام Google).',
+    open: 'فتح GradeScan',
+    help: 'لم يحدث شيء؟ انسخ رابط تسجيل الدخول، ثم ارجع إلى GradeScan والصقه عندما يُطلب منك.',
+    copy: 'نسخ رابط تسجيل الدخول',
+    copied: 'تم النسخ ✓'
+  } : {
+    returning: 'Returning to GradeScan…',
+    almost: 'Almost done',
+    cancelled: 'Sign-in cancelled',
+    cannot: 'Cannot sign in from here',
+    cannotMsg: 'Open the sign-in from the GradeScan app (Settings → Continue with Google).',
+    open: 'Open GradeScan',
+    help: 'Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.',
+    copy: 'Copy sign-in link',
+    copied: 'Copied ✓'
+  };
+  if (AR) { document.documentElement.lang = 'ar'; document.documentElement.dir = 'rtl'; }
 
   var params = new URLSearchParams(location.search);
   var state = params.get('state') || '';
   var code = params.get('code') || '';
   var error = params.get('error') || '';
 
+  function $(id) { return document.getElementById(id); }
   function show(title, message) {
-    document.getElementById('title').textContent = title;
-    document.getElementById('msg').textContent = message || '';
+    $('title').textContent = title;
+    $('msg').textContent = message || '';
   }
 
   // state = base64url(JSON {r: appLink, e: expiry, n: nonce}) + "." + signature
@@ -53,7 +91,7 @@
       while (b64.length % 4) b64 += '=';
       var json = decodeURIComponent(escape(atob(b64)));
       var r = JSON.parse(json).r;
-      if (typeof r !== 'string' || r.length === 0 || r.length > 600 || /[\s<>"'`]/.test(r)) return null;
+      if (typeof r !== 'string' || r.length === 0 || r.length > 600 || /[\s<>"'`;#\\]/.test(r)) return null;
       var scheme = new URL(r).protocol.toLowerCase();
       return APP_SCHEMES.indexOf(scheme) === -1 ? null : r;
     } catch (e) {
@@ -61,9 +99,41 @@
     }
   }
 
+  // "exp://192.168.1.5:8081/--/google-auth?x=1" -> Android intent link that opens Expo Go / the app
+  function androidIntent(u) {
+    var m = /^([a-z][a-z0-9+.\-]*):\/\/([^#;]+)$/i.exec(u);
+    if (!m) return null;
+    var scheme = m[1].toLowerCase();
+    var pkg = (scheme === 'exp' || scheme === 'exps') ? ';package=' + EXPO_GO_PACKAGE : '';
+    return 'intent://' + m[2] + '#Intent;scheme=' + scheme + pkg + ';end';
+  }
+
+  function copyText(text, done) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) done();
+      } catch (e) { /* nothing else to try */ }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
   var back = returnUrlFromState(state);
   if (!back) {
-    show('Cannot sign in from here', 'Open the sign-in from the GradeScan app (Settings → Continue with Google).');
+    show(TX.cannot, TX.cannotMsg);
     return;
   }
 
@@ -76,11 +146,20 @@
     query = 'error=' + encodeURIComponent('Google did not send a sign-in code');
   }
   var target = back + (back.indexOf('?') === -1 ? '?' : '&') + query;
+  var isAndroid = /Android/i.test(navigator.userAgent || '');
+  var buttonHref = (isAndroid && androidIntent(target)) || target;
 
-  show(error ? 'Sign-in cancelled' : 'Almost done', 'Returning to GradeScan…');
-  document.getElementById('link').href = target;
-  document.getElementById('open').hidden = false;
-  // Some browsers only open an app after a tap, hence the button as well as the automatic redirect.
+  show(error ? TX.cancelled : TX.almost, TX.returning);
+  $('link').textContent = TX.open;
+  $('link').href = buttonHref;
+  $('open').hidden = false;
+  $('helpText').textContent = TX.help;
+  $('copy').textContent = TX.copy;
+  $('help').hidden = !!error;   // nothing to paste after a cancel
+  $('copy').addEventListener('click', function () {
+    copyText(target, function () { $('copy').textContent = TX.copied; });
+  });
+  // Most browsers follow this by themselves; the button above is the second try.
   setTimeout(function () { window.location.href = target; }, 300);
 })();
 </script>
