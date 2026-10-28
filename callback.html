@@ -22,6 +22,7 @@
   <h1 id="title">Returning to GradeScan…</h1>
   <p id="msg"></p>
   <p id="open" hidden><a class="btn" id="link" href="#">Open GradeScan</a></p>
+  <p id="where" class="small" hidden></p>
   <p id="help" hidden class="small">
     <span id="helpText">Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.</span><br>
     <button class="btn2" id="copy" type="button">Copy sign-in link</button>
@@ -38,9 +39,13 @@
  * (Expo Go or the installed app), never a website.
  *
  * Getting back into the app:
- *   - the page redirects to the app link by itself (works in most browsers);
- *   - the big button is a second try; on Android it uses an "intent:" link, which Chrome opens
- *     even when it ignores a plain custom-scheme link;
+ *   - the page redirects to the app link IMMEDIATELY, in the same breath as it loads. This matters:
+ *     Chrome only lets a page open an app when the navigation comes from a user gesture, and the
+ *     tap on Google's "Continue" button still counts for a redirect made while the page loads, but
+ *     NOT for one made later from a timer (Chrome lists "a JavaScript timer tried to open an
+ *     application without a user gesture" as a blocked case). So: no setTimeout here.
+ *   - the big button is a second try (a fresh tap always counts); on Android it uses an "intent:"
+ *     link that names Expo Go's package;
  *   - "Copy sign-in link" is the last resort: the app has a box where the link can be pasted.
  *
  * If you changed "scheme" in the app's app.json, add it here too (with a colon).
@@ -159,8 +164,11 @@
   $('copy').addEventListener('click', function () {
     copyText(target, function () { $('copy').textContent = TX.copied; });
   });
-  // Most browsers follow this by themselves; the button above is the second try.
-  setTimeout(function () { window.location.href = target; }, 300);
+  // Shows which app link is used (never the code), so a wrong address is easy to spot.
+  $('where').textContent = back;
+  $('where').hidden = false;
+  // Immediately, not from a timer (see the note at the top). replace() keeps the used link out of history.
+  window.location.replace(target);
 })();
 </script>
 </body>
