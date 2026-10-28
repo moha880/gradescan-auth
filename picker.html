@@ -36,13 +36,19 @@
  *   appId        the Google Cloud project number
  *   fileId       optional: the teacher pasted a link, so this sheet is shown first
  *
- * The page sends one JSON message back to the app (window.ReactNativeWebView.postMessage):
+ * Settings normally arrive before the page loads (window.GS_PICKER). Some phones do not run the app's
+ * "before the page loads" script, so the page ALSO asks: it posts { type: 'ready' } and the app answers by
+ * calling window.gsStart({ accessToken, apiKey, appId, fileId? }) once.
+ *
+ * The page sends JSON messages back to the app (window.ReactNativeWebView.postMessage):
+ *   { type: 'step', step }                           progress marker (page, ready, config-early/late, gapi-loaded, ...)
+ *   { type: 'ready' }                                the page is waiting for its settings
  *   { type: 'shown' }                                the picker is on screen
  *   { type: 'picked', id, name, url }                a sheet was chosen: the app may use it from now on
  *   { type: 'cancel' }                               closed without choosing
  *   { type: 'error', code, message }                 Google's scripts did not load / the picker failed
- * It never sends the token anywhere and talks only to Google. Opened in a normal browser (no
- * window.GS_PICKER) it just says where to start.
+ * It never sends the token anywhere and talks only to Google. Opened in a normal browser (no app) it
+ * just says where to start.
  */
 (function () {
   var AR = /^ar\b/i.test(navigator.language || '');
@@ -74,22 +80,18 @@
     } catch (e) { /* the app is gone; nothing to tell */ }
   }
 
-  var cfg = window.GS_PICKER;
-  var configured = cfg && typeof cfg === 'object' &&
-    typeof cfg.accessToken === 'string' && cfg.accessToken.length > 0 &&
-    typeof cfg.apiKey === 'string' && cfg.apiKey.length > 0 &&
-    (typeof cfg.appId === 'string' || typeof cfg.appId === 'number') && String(cfg.appId).length > 0;
-  if (!configured) {
-    show(TX.title, TX.fromApp);
-    return;
+  var inApp = !!(window.ReactNativeWebView && window.ReactNativeWebView.postMessage);
+  function step(name) { post({ type: 'step', step: name }); }
+  step('page');
+
+  function isConfig(cfg) {
+    return !!cfg && typeof cfg === 'object' &&
+      typeof cfg.accessToken === 'string' && cfg.accessToken.length > 0 &&
+      typeof cfg.apiKey === 'string' && cfg.apiKey.length > 0 &&
+      (typeof cfg.appId === 'string' || typeof cfg.appId === 'number') && String(cfg.appId).length > 0;
   }
-  // The token now lives only in this page's memory.
-  var token = cfg.accessToken, apiKey = cfg.apiKey, appId = String(cfg.appId);
-  var fileId = typeof cfg.fileId === 'string' && /^[A-Za-z0-9_-]{10,200}$/.test(cfg.fileId) ? cfg.fileId : '';
-  try { delete window.GS_PICKER; } catch (e) { window.GS_PICKER = undefined; }
 
-  show(TX.opening, '');
-
+  var started = false;
   var finished = false;
   function fail(code, message) {
     if (finished) return;
@@ -98,74 +100,108 @@
     post({ type: 'error', code: code, message: String(message || code).slice(0, 200) });
   }
 
-  function build() {
-    try {
-      var G = google.picker;
-      var SHEETS = 'application/vnd.google-apps.spreadsheet';
-      function view(owned) {
-        var v = new G.DocsView(G.ViewId.SPREADSHEETS).setMimeTypes(SHEETS).setIncludeFolders(false);
-        // LIST: with the per-file permission Google may not hand out thumbnails
-        if (G.DocsViewMode && G.DocsViewMode.LIST) v.setMode(G.DocsViewMode.LIST);
-        if (owned !== null) v.setOwnedByMe(owned);
-        return v;
-      }
-      var builder = new G.PickerBuilder()
-        .setAppId(appId)
-        .setDeveloperKey(apiKey)
-        .setOAuthToken(token)
-        .setOrigin(window.location.protocol + '//' + window.location.host)
-        .setLocale(AR ? 'ar' : 'en')
-        .setTitle(TX.title);
-      if (fileId) {
-        // the teacher pasted a link: show exactly that sheet first (the other tabs stay available)
-        builder.addView(view(null).setFileIds(fileId));
-      }
-      builder.addView(view(true)).addView(view(false)); // my sheets, shared with me
-      builder.setCallback(function (data) {
-        if (finished || !data) return;
-        var action = data[G.Response.ACTION];
-        if (action === G.Action.PICKED) {
-          var docs = data[G.Response.DOCUMENTS] || [];
-          var doc = docs[0];
-          if (!doc) { fail('empty', 'Nothing was chosen.'); return; }
-          finished = true;
-          post({
-            type: 'picked',
-            id: String(doc[G.Document.ID] || ''),
-            name: String(doc[G.Document.NAME] || '').slice(0, 200),
-            url: String(doc[G.Document.URL] || '')
-          });
-        } else if (action === G.Action.CANCEL) {
-          finished = true;
-          post({ type: 'cancel' });
-        } else if (action === 'loaded') {
-          post({ type: 'shown' });
+  function start(cfg, how) {
+    if (started) return;
+    started = true;
+    if (!isConfig(cfg)) { fail('config', 'The settings from the app were incomplete.'); return; }
+    // The token now lives only in this page's memory.
+    var token = cfg.accessToken, apiKey = cfg.apiKey, appId = String(cfg.appId);
+    var fileId = typeof cfg.fileId === 'string' && /^[A-Za-z0-9_-]{10,200}$/.test(cfg.fileId) ? cfg.fileId : '';
+    step('config-' + how);
+    show(TX.opening, '');
+
+    function build() {
+      step('picker-lib');
+      try {
+        var G = google.picker;
+        var SHEETS = 'application/vnd.google-apps.spreadsheet';
+        function view(owned) {
+          var v = new G.DocsView(G.ViewId.SPREADSHEETS).setMimeTypes(SHEETS).setIncludeFolders(false);
+          // LIST: with the per-file permission Google may not hand out thumbnails
+          if (G.DocsViewMode && G.DocsViewMode.LIST) v.setMode(G.DocsViewMode.LIST);
+          if (owned !== null) v.setOwnedByMe(owned);
+          return v;
         }
-      });
-      builder.build().setVisible(true);
-      post({ type: 'shown' });
-    } catch (e) {
-      fail('build', e && e.message ? e.message : e);
+        var builder = new G.PickerBuilder()
+          .setAppId(appId)
+          .setDeveloperKey(apiKey)
+          .setOAuthToken(token)
+          .setOrigin(window.location.protocol + '//' + window.location.host)
+          .setLocale(AR ? 'ar' : 'en')
+          .setTitle(TX.title);
+        if (fileId) {
+          // the teacher pasted a link: show exactly that sheet first (the other tabs stay available)
+          builder.addView(view(null).setFileIds(fileId));
+        }
+        builder.addView(view(true)).addView(view(false)); // my sheets, shared with me
+        builder.setCallback(function (data) {
+          if (finished || !data) return;
+          var action = data[G.Response.ACTION];
+          if (action === G.Action.PICKED) {
+            var docs = data[G.Response.DOCUMENTS] || [];
+            var doc = docs[0];
+            if (!doc) { fail('empty', 'Nothing was chosen.'); return; }
+            finished = true;
+            post({
+              type: 'picked',
+              id: String(doc[G.Document.ID] || ''),
+              name: String(doc[G.Document.NAME] || '').slice(0, 200),
+              url: String(doc[G.Document.URL] || '')
+            });
+          } else if (action === G.Action.CANCEL) {
+            finished = true;
+            post({ type: 'cancel' });
+          } else if (action === 'loaded') {
+            post({ type: 'shown' });
+          }
+        });
+        builder.build().setVisible(true);
+        step('built');
+        post({ type: 'shown' });
+      } catch (e) {
+        fail('build', e && e.message ? e.message : e);
+      }
     }
+
+    var scriptTimer = setTimeout(function () { fail('load-script-timeout', 'Google scripts took too long to load.'); }, 15000);
+    var script = document.createElement('script');
+    script.src = 'https://apis.google.com/js/api.js';
+    script.async = true;
+    script.onload = function () {
+      clearTimeout(scriptTimer);
+      step('gapi-loaded');
+      try {
+        gapi.load('picker', {
+          callback: build,
+          onerror: function () { fail('load-picker', 'The picker did not load.'); },
+          timeout: 15000,
+          ontimeout: function () { fail('load-picker-timeout', 'The picker took too long to load.'); }
+        });
+      } catch (e) {
+        fail('load-gapi', e && e.message ? e.message : e);
+      }
+    };
+    script.onerror = function () { clearTimeout(scriptTimer); fail('load-script', 'Google scripts did not load.'); };
+    document.head.appendChild(script);
   }
 
-  var script = document.createElement('script');
-  script.src = 'https://apis.google.com/js/api.js';
-  script.async = true;
-  script.onload = function () {
-    try {
-      gapi.load('picker', {
-        callback: build,
-        onerror: function () { fail('load-picker', 'The picker did not load.'); },
-        timeout: 15000,
-        ontimeout: function () { fail('load-picker-timeout', 'The picker took too long to load.'); }
-      });
-    } catch (e) {
-      fail('load-gapi', e && e.message ? e.message : e);
-    }
-  };
-  script.onerror = function () { fail('load-script', 'Google scripts did not load.'); };
-  document.head.appendChild(script);
+  var early = window.GS_PICKER;
+  try { delete window.GS_PICKER; } catch (e) { window.GS_PICKER = undefined; }
+  if (isConfig(early)) {
+    start(early, 'early');
+  } else if (!inApp) {
+    show(TX.title, TX.fromApp);
+  } else {
+    // In the app, but the settings were not in place when the page started: ask for them.
+    show(TX.opening, '');
+    window.gsStart = function (cfg) {
+      try { delete window.gsStart; } catch (e) { window.gsStart = undefined; }
+      start(cfg, 'late');
+    };
+    step('ready');
+    post({ type: 'ready' });
+    setTimeout(function () { if (!started) fail('no-config', 'The app did not send its settings.'); }, 8000);
+  }
 })();
 </script>
 </body>
