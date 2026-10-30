@@ -25,10 +25,6 @@
   <p id="open" hidden><a class="btn" id="link" href="#">Open GradeScan</a></p>
   <p id="altwrap" hidden><a class="btn2 alt" id="alt" href="#">Open in Expo Go</a></p>
   <p id="where" class="small" hidden></p>
-  <p id="help" hidden class="small">
-    <span id="helpText">Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.</span><br>
-    <button class="btn2" id="copy" type="button">Copy sign-in link</button>
-  </p>
 </main>
 <script>
 /*
@@ -50,7 +46,7 @@
  *     link that names Expo Go's package;
  *   - when the app names a second way back (Expo Go AND the installed app), a second button opens
  *     that one, so it does not matter which of the two is actually running;
- *   - "Copy sign-in link" is the last resort: the app has a box where the link can be pasted.
+ *   - there is no "copy the link" step: the buttons above are the whole fallback.
  *
  * Old pages must stay quiet:
  *   - right after reading ?code=…&state=…, the page removes them from the address bar (history.replaceState),
@@ -76,10 +72,7 @@
     expiredMsg: 'هذه الصفحة قديمة. ارجع إلى تطبيق GradeScan واضغط «المتابعة باستخدام Google» من جديد، ثم أغلق هذه الصفحة.',
     open: 'فتح GradeScan',
     openExpo: 'الفتح في Expo Go',
-    openApp: 'فتح التطبيق المثبّت',
-    help: 'لم يحدث شيء؟ انسخ رابط تسجيل الدخول، ثم ارجع إلى GradeScan والصقه عندما يُطلب منك.',
-    copy: 'نسخ رابط تسجيل الدخول',
-    copied: 'تم النسخ ✓'
+    openApp: 'فتح التطبيق المثبّت'
   } : {
     returning: 'Returning to GradeScan…',
     almost: 'Almost done',
@@ -90,10 +83,7 @@
     expiredMsg: 'This page is old. Go back to the GradeScan app, tap Continue with Google again, and close this page.',
     open: 'Open GradeScan',
     openExpo: 'Open in Expo Go',
-    openApp: 'Open the installed app',
-    help: 'Nothing happens? Copy the sign-in link, go back to GradeScan and paste it when it asks.',
-    copy: 'Copy sign-in link',
-    copied: 'Copied ✓'
+    openApp: 'Open the installed app'
   };
   if (AR) { document.documentElement.lang = 'ar'; document.documentElement.dir = 'rtl'; }
 
@@ -105,7 +95,7 @@
   // The values are now in memory. Take them out of the address bar and out of this tab's history
   // entry: a browser that later reloads or re-opens this tab (a stale tab left behind by an earlier
   // sign-in, "restore tabs", a Custom Tab being reused) then finds NO code and never forwards an
-  // old sign-in to the app again. The buttons and "Copy sign-in link" use the copies in memory.
+  // old sign-in to the app again. The buttons use the copies in memory.
   try { history.replaceState(null, '', location.pathname); } catch (e) { /* nothing to strip */ }
 
   function $(id) { return document.getElementById(id); }
@@ -151,29 +141,6 @@
     return 'intent://' + m[2] + '#Intent;scheme=' + scheme + pkg + ';end';
   }
 
-  function copyText(text, done) {
-    function fallback() {
-      try {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.setAttribute('readonly', '');
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        ta.setSelectionRange(0, text.length);
-        var ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        if (ok) done();
-      } catch (e) { /* nothing else to try */ }
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, fallback);
-    } else {
-      fallback();
-    }
-  }
-
   var links = linksFromState(state);
   if (!links) {
     show(TX.cannot, TX.cannotMsg);
@@ -213,12 +180,6 @@
     $('alt').href = forButton(altTarget);
     $('altwrap').hidden = false;
   }
-  $('helpText').textContent = TX.help;
-  $('copy').textContent = TX.copy;
-  $('help').hidden = !!error;   // nothing to paste after a cancel
-  $('copy').addEventListener('click', function () {
-    copyText(target, function () { $('copy').textContent = TX.copied; });
-  });
   // Shows which app link is used (never the code), so a wrong address is easy to spot.
   $('where').textContent = links.second ? back + '  |  ' + links.second : back;
   $('where').hidden = false;
